@@ -226,7 +226,10 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         # if it supports that (e.g. CloakBrowser, which runs locally rather than via CDP)
         watch = datastore.data['watching'][watch_uuid]
         from changedetectionio import content_fetchers
-        from changedetectionio.pluggy_interface import resolve_watch_fetcher_name
+        from changedetectionio.pluggy_interface import (
+            resolve_watch_browser_connection_url,
+            resolve_watch_fetcher_name,
+        )
         fetcher_name = resolve_watch_fetcher_name(watch, datastore)
         fetcher_class = getattr(content_fetchers, fetcher_name, None)
 
@@ -246,7 +249,12 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         if browser is None:
             playwright_instance = async_playwright()
             playwright_context = await playwright_instance.start()
-            base_url = os.getenv('PLAYWRIGHT_DRIVER_URL', '').strip('"')
+            base_url = resolve_watch_browser_connection_url(watch, datastore)
+            if not base_url:
+                raise RuntimeError(
+                    "No browser connection URL is configured for Browser Steps. "
+                    "Set PLAYWRIGHT_DRIVER_URL or select an Extra Browser for this watch."
+                )
             a = "?" if '?' not in base_url else '&'
             base_url += a + f"timeout={keepalive_ms}"
             browser = await playwright_context.chromium.connect_over_cdp(base_url, timeout=keepalive_ms)

@@ -445,6 +445,31 @@ def resolve_watch_fetcher_name(watch, datastore, fallback='html_requests'):
     return fetcher_name or fallback
 
 
+def resolve_watch_browser_connection_url(watch, datastore):
+    """Resolve the browser connection URL used for browser-backed sessions.
+
+    Watch-level extra browser settings take precedence over environment defaults,
+    so live Browser Steps sessions use the same endpoint the watch is configured
+    to fetch with.
+    """
+    fetch_backend = watch.get('fetch_backend', 'system') or 'system'
+
+    if fetch_backend == 'system':
+        fetch_backend = datastore.data['settings']['application'].get(
+            'fetch_backend', 'html_requests'
+        )
+
+    if fetch_backend and fetch_backend.startswith('extra_browser_'):
+        browser_name = fetch_backend.split('extra_browser_', 1)[1]
+        for connection in datastore.data['settings']['requests'].get('extra_browsers', []):
+            if connection.get('browser_name') == browser_name and connection.get(
+                'browser_connection_url'
+            ):
+                return connection.get('browser_connection_url')
+
+    return os.getenv('PLAYWRIGHT_DRIVER_URL', '').strip('"')
+
+
 def get_fetcher_capabilities(watch, datastore):
     """Get capability flags for a watch's fetcher.
 
