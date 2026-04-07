@@ -112,6 +112,12 @@ jobs:
           git fetch --force --tags upstream
           git fetch --force origin "${PATCH_SOURCE_BRANCH}"
 
+      - name: Configure git identity for cherry-picks
+        if: steps.image_check.outputs.exists != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Apply fork patches on top of upstream release
         if: steps.image_check.outputs.exists != 'true'
         env:
