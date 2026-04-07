@@ -1,0 +1,174 @@
+name: Build patched image from upstream release
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional upstream release tag to build (for example 0.50.4)'
+        required: false
+        type: string
+      patch_source_branch:
+        description: 'Branch in this fork that contains your custom commits'
+        required: false
+        default: 'master'
+        type: string
+      force_rebuild:
+        description: 'Build even if the target image tag already exists'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-patched-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: dgtlmoon/changedetection.io
+  PATCH_SOURCE_BRANCH: master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release and image tags
+        id: vars
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_PATCH_SOURCE_BRANCH: ${{ github.event.inputs.patch_source_branch }}
+        run: |
+          set -eu
+
+          release_tag="${INPUT_RELEASE_TAG:-}"
+          if [ -z "$release_tag" ]; then
+            release_tag="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)"
+          fi
+
+          patch_source_branch="${INPUT_PATCH_SOURCE_BRANCH:-${PATCH_SOURCE_BRANCH}}"
+          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
+          image_repo="ghcr.io/${owner_lc}/changedetection.io"
+          image_tag="${release_tag}-patched"
+
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "patch_source_branch=${patch_source_branch}" >> "$GITHUB_OUTPUT"
+          echo "image_repo=${image_repo}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Skip when image already exists
+        id: image_check
+        env:
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild }}
+          IMAGE_REPO: ${{ steps.vars.outputs.image_repo }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+        run: |
+          set -eu
+
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if docker manifest inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop because image already exists
+        if: steps.image_check.outputs.exists == 'true'
+        run: |
+          echo "Image ${IMAGE_REPO}:${IMAGE_TAG} already exists, skipping build."
+        env:
+          IMAGE_REPO: ${{ steps.vars.outputs.image_repo }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+
+      - name: Fetch upstream release and fork branch
+        if: steps.image_check.outputs.exists != 'true'
+        env:
+          PATCH_SOURCE_BRANCH: ${{ steps.vars.outputs.patch_source_branch }}
+        run: |
+          set -eu
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || true
+          git fetch --force --tags upstream
+          git fetch --force origin "${PATCH_SOURCE_BRANCH}"
+
+      - name: Apply fork patches on top of upstream release
+        if: steps.image_check.outputs.exists != 'true'
+        env:
+          PATCH_SOURCE_BRANCH: ${{ steps.vars.outputs.patch_source_branch }}
+          RELEASE_TAG: ${{ steps.vars.outputs.release_tag }}
+        run: |
+          set -eu
+
+          git checkout --detach "${RELEASE_TAG}"
+
+          patch_commits="$(git rev-list --reverse --no-merges "upstream/master..origin/${PATCH_SOURCE_BRANCH}")"
+
+          if [ -n "$patch_commits" ]; then
+            for commit in $patch_commits; do
+              git cherry-pick "$commit"
+            done
+          fi
+
+          echo "$(git rev-parse HEAD)" > changedetectionio/source.txt
+          echo "${RELEASE_TAG}-patched" > changedetectionio/tag.txt
+
+      - name: Set up QEMU
+        if: steps.image_check.outputs.exists != 'true'
+        uses: docker/setup-qemu-action@v4
+        with:
+          image: tonistiigi/binfmt:latest
+          platforms: all
+
+      - name: Set up Docker Buildx
+        if: steps.image_check.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push patched image
+        if: steps.image_check.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v8
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ "${SKIPPED}" = "true" ]; then
+            echo "Skipped: ${IMAGE_REPO}:${IMAGE_TAG} already exists." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Built: ${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Upstream release: ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Patch source branch: ${PATCH_SOURCE_BRANCH}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          SKIPPED: ${{ steps.image_check.outputs.exists }}
+          IMAGE_REPO: ${{ steps.vars.outputs.image_repo }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          RELEASE_TAG: ${{ steps.vars.outputs.release_tag }}
+          PATCH_SOURCE_BRANCH: ${{ steps.vars.outputs.patch_source_branch }}
