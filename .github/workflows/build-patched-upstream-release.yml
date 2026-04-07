@@ -51,20 +51,35 @@ jobs:
         run: |
           set -eu
 
+          latest_release_tag="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)"
           release_tag="${INPUT_RELEASE_TAG:-}"
           if [ -z "$release_tag" ]; then
-            release_tag="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)"
+            release_tag="$latest_release_tag"
           fi
 
           patch_source_branch="${INPUT_PATCH_SOURCE_BRANCH:-${PATCH_SOURCE_BRANCH}}"
           owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
           image_repo="ghcr.io/${owner_lc}/changedetection.io"
           image_tag="${release_tag}-patched"
+          image_tags="${image_repo}:${image_tag}"
+
+          if [ "$release_tag" = "$latest_release_tag" ]; then
+            image_tags="${image_tags}
+${image_repo}:latest"
+            is_latest_release=true
+          else
+            is_latest_release=false
+          fi
 
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "latest_release_tag=${latest_release_tag}" >> "$GITHUB_OUTPUT"
           echo "patch_source_branch=${patch_source_branch}" >> "$GITHUB_OUTPUT"
           echo "image_repo=${image_repo}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+          echo "is_latest_release=${is_latest_release}" >> "$GITHUB_OUTPUT"
+          echo "image_tags<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$image_tags" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -79,6 +94,7 @@ jobs:
           FORCE_REBUILD: ${{ github.event.inputs.force_rebuild }}
           IMAGE_REPO: ${{ steps.vars.outputs.image_repo }}
           IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          IS_LATEST_RELEASE: ${{ steps.vars.outputs.is_latest_release }}
         run: |
           set -eu
 
@@ -87,11 +103,17 @@ jobs:
             exit 0
           fi
 
-          if docker manifest inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+          if ! docker manifest inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          if [ "$IS_LATEST_RELEASE" = "true" ] && ! docker manifest inspect "${IMAGE_REPO}:latest" >/dev/null 2>&1; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "exists=true" >> "$GITHUB_OUTPUT"
 
       - name: Stop because image already exists
         if: steps.image_check.outputs.exists == 'true'
@@ -157,7 +179,7 @@ jobs:
           context: ./
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}
+          tags: ${{ steps.vars.outputs.image_tags }}
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -166,15 +188,17 @@ jobs:
         if: always()
         run: |
           if [ "${SKIPPED}" = "true" ]; then
-            echo "Skipped: ${IMAGE_REPO}:${IMAGE_TAG} already exists." >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipped: required image tags already exist." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Built: ${IMAGE_REPO}:${IMAGE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Built tags:" >> "$GITHUB_STEP_SUMMARY"
+            echo "${IMAGE_TAGS}" | while IFS= read -r tag; do
+              echo "- ${tag}" >> "$GITHUB_STEP_SUMMARY"
+            done
             echo "Upstream release: ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
             echo "Patch source branch: ${PATCH_SOURCE_BRANCH}" >> "$GITHUB_STEP_SUMMARY"
           fi
         env:
           SKIPPED: ${{ steps.image_check.outputs.exists }}
-          IMAGE_REPO: ${{ steps.vars.outputs.image_repo }}
-          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          IMAGE_TAGS: ${{ steps.vars.outputs.image_tags }}
           RELEASE_TAG: ${{ steps.vars.outputs.release_tag }}
           PATCH_SOURCE_BRANCH: ${{ steps.vars.outputs.patch_source_branch }}
