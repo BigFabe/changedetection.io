@@ -417,6 +417,34 @@ def get_active_plugins():
     return active_plugins
 
 
+def resolve_watch_fetcher_name(watch, datastore, fallback='html_requests'):
+    """Resolve the effective fetcher name for a watch.
+
+    This normalizes watch-specific aliases such as ``extra_browser_*`` to the
+    real fetcher implementation they use under the hood.
+
+    Args:
+        watch: The watch object/dict
+        datastore: The datastore to resolve system defaults and extra browsers
+        fallback: Fallback fetcher name when nothing is configured
+
+    Returns:
+        str: Effective fetcher name
+    """
+    if getattr(watch, 'is_pdf', False):
+        return 'html_requests'
+
+    fetcher_name = watch.get('fetch_backend', 'system') or 'system'
+
+    if fetcher_name == 'system':
+        fetcher_name = datastore.data['settings']['application'].get('fetch_backend', fallback)
+
+    if fetcher_name and fetcher_name.startswith('extra_browser_'):
+        return 'html_webdriver'
+
+    return fetcher_name or fallback
+
+
 def get_fetcher_capabilities(watch, datastore):
     """Get capability flags for a watch's fetcher.
 
@@ -432,12 +460,7 @@ def get_fetcher_capabilities(watch, datastore):
                 'supports_xpath_element_data': bool
             }
     """
-    # Get the fetcher name from watch
-    fetcher_name = watch.get('fetch_backend', 'system')
-
-    # Resolve 'system' to actual fetcher
-    if fetcher_name == 'system':
-        fetcher_name = datastore.data['settings']['application'].get('fetch_backend', 'html_requests')
+    fetcher_name = resolve_watch_fetcher_name(watch, datastore)
 
     # Get the fetcher class
     from changedetectionio import content_fetchers

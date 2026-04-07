@@ -226,9 +226,8 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         # if it supports that (e.g. CloakBrowser, which runs locally rather than via CDP)
         watch = datastore.data['watching'][watch_uuid]
         from changedetectionio import content_fetchers
-        fetcher_name = watch.get_fetch_backend or 'system'
-        if fetcher_name == 'system':
-            fetcher_name = datastore.data['settings']['application'].get('fetch_backend', 'html_requests')
+        from changedetectionio.pluggy_interface import resolve_watch_fetcher_name
+        fetcher_name = resolve_watch_fetcher_name(watch, datastore)
         fetcher_class = getattr(content_fetchers, fetcher_name, None)
 
         browser = None

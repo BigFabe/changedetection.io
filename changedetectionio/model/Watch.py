@@ -392,14 +392,13 @@ class model(EntityPersistenceMixin, watch_base):
     def fetcher_supports_screenshots(self):
         """Return True if the fetcher configured for this watch supports screenshots.
 
-        Resolves 'system' via self._datastore, then checks supports_screenshots on
+        Resolves 'system' and custom ``extra_browser_*`` aliases before checking
         the actual fetcher class. Works for built-in and plugin fetchers alike.
         """
         from changedetectionio import content_fetchers
+        from changedetectionio.pluggy_interface import resolve_watch_fetcher_name
 
-        fetcher_name = self.get_fetch_backend  # already handles is_pdf → html_requests
-        if not fetcher_name or fetcher_name == 'system':
-            fetcher_name = self._datastore['settings']['application'].get('fetch_backend', 'html_requests')
+        fetcher_name = resolve_watch_fetcher_name(self, self._datastore)
 
         fetcher_class = getattr(content_fetchers, fetcher_name, None)
         if fetcher_class is None:
