@@ -64,8 +64,7 @@ jobs:
           image_tags="${image_repo}:${image_tag}"
 
           if [ "$release_tag" = "$latest_release_tag" ]; then
-            image_tags="${image_tags}
-${image_repo}:latest"
+            image_tags="$(printf '%s\n%s' "$image_tags" "${image_repo}:latest")"
             is_latest_release=true
           else
             is_latest_release=false
